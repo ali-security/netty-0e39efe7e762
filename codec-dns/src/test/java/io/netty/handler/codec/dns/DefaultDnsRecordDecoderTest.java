@@ -18,10 +18,13 @@ package io.netty.handler.codec.dns;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class DefaultDnsRecordDecoderTest {
 
@@ -230,6 +233,62 @@ public class DefaultDnsRecordDecoderTest {
             if (rawUncompressedIndexedRecord != null) {
                 rawUncompressedIndexedRecord.release();
             }
+            buffer.release();
+        }
+    }
+
+    @Test
+    public void testDecodeCnameRecordDoesNotLeakWhenRecordCreationFails() {
+        // The owner name decodes to "a..b." which contains an empty label and so is rejected when the
+        // DefaultDnsRawRecord is constructed. The already decompressed RDATA must not leak.
+        UnpooledByteBufAllocator alloc = new UnpooledByteBufAllocator(false);
+        byte[] record = {
+                4, 'a', '.', '.', 'b', 0,               // owner name -> "a..b."
+                0, 5,                                   // type = CNAME
+                0, 1,                                   // class = IN
+                0, 0, 0, 1,                             // ttl
+                0, 10,                                  // rdata length
+                5, 'n', 'e', 't', 't', 'y', 2, 'i', 'o', 0
+        };
+        final ByteBuf buffer = alloc.buffer(record.length).writeBytes(record);
+        final DefaultDnsRecordDecoder decoder = new DefaultDnsRecordDecoder();
+        try {
+            final long usedBefore = alloc.metric().usedHeapMemory();
+            assertThrows(IllegalArgumentException.class, new Executable() {
+                @Override
+                public void execute() throws Exception {
+                    decoder.decodeRecord(buffer);
+                }
+            });
+            assertEquals(usedBefore, alloc.metric().usedHeapMemory());
+            assertEquals(1, buffer.refCnt());
+        } finally {
+            buffer.release();
+        }
+    }
+
+    @Test
+    public void testDecodeRawRecordDoesNotLeakWhenRecordCreationFails() {
+        // Same as above but for the generic branch which uses in.retainedDuplicate(): the retained
+        // duplicate must be released again when the record can not be created.
+        final ByteBuf buffer = Unpooled.buffer().writeBytes(new byte[] {
+                4, 'a', '.', '.', 'b', 0,               // owner name -> "a..b."
+                0, 1,                                   // type = A
+                0, 1,                                   // class = IN
+                0, 0, 0, 1,                             // ttl
+                0, 4,                                   // rdata length
+                10, 0, 0, 1
+        });
+        final DefaultDnsRecordDecoder decoder = new DefaultDnsRecordDecoder();
+        try {
+            assertThrows(IllegalArgumentException.class, new Executable() {
+                @Override
+                public void execute() throws Exception {
+                    decoder.decodeRecord(buffer);
+                }
+            });
+            assertEquals(1, buffer.refCnt());
+        } finally {
             buffer.release();
         }
     }

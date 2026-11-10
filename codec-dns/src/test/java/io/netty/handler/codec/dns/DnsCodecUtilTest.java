@@ -17,10 +17,12 @@ package io.netty.handler.codec.dns;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.handler.codec.TooLongFrameException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class DnsCodecUtilTest {
@@ -95,6 +97,38 @@ public class DnsCodecUtilTest {
             }
         });
         buf.release();
+    }
+
+    @Test
+    public void decompressDomainNameReleasesBufferWhenLabelContainsNullByte() {
+        // A label that holds a NUL byte can be decoded but is rejected while encoding it again.
+        testDecompressDomainNameDoesNotLeak(new byte[] { 3, 'a', 0, 'b', 0 });
+    }
+
+    @Test
+    public void decompressDomainNameReleasesBufferWhenNameContainsEmptyLabel() {
+        // A label that holds a dot decodes to "a..b." which contains an empty label once split again,
+        // so encoding it fails after the destination buffer was already allocated.
+        testDecompressDomainNameDoesNotLeak(new byte[] { 4, 'a', '.', '.', 'b', 0 });
+    }
+
+    private static void testDecompressDomainNameDoesNotLeak(byte[] compressed) {
+        UnpooledByteBufAllocator alloc = new UnpooledByteBufAllocator(false);
+        final ByteBuf buf = alloc.buffer(compressed.length).writeBytes(compressed);
+        try {
+            final long usedBefore = alloc.metric().usedHeapMemory();
+            assertThrows(IllegalArgumentException.class, new Executable() {
+                @Override
+                public void execute() {
+                    DnsCodecUtil.decompressDomainName(buf.duplicate());
+                }
+            });
+            // The buffer that was allocated by decompressDomainName(...) must be released before the
+            // exception is propagated to the caller, otherwise it leaks.
+            assertEquals(usedBefore, alloc.metric().usedHeapMemory());
+        } finally {
+            buf.release();
+        }
     }
 
     private static void writeLabel(ByteBuf buf, int length) {

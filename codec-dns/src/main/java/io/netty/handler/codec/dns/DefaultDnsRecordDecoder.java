@@ -97,12 +97,30 @@ public class DefaultDnsRecordDecoder implements DnsRecordDecoder {
                     name, dnsClass, timeToLive, decodeName0(in.duplicate().setIndex(offset, offset + length)));
         }
         if (type == DnsRecordType.CNAME || type == DnsRecordType.NS) {
-            return new DefaultDnsRawRecord(name, type, dnsClass, timeToLive,
-                                           DnsCodecUtil.decompressDomainName(
-                                                   in.duplicate().setIndex(offset, offset + length)));
+            ByteBuf decompressed = DnsCodecUtil.decompressDomainName(
+                    in.duplicate().setIndex(offset, offset + length));
+            try {
+                DnsRecord record = new DefaultDnsRawRecord(name, type, dnsClass, timeToLive, decompressed);
+                decompressed = null;
+                return record;
+            } finally {
+                if (decompressed != null) {
+                    decompressed.release();
+                }
+            }
         }
-        return new DefaultDnsRawRecord(
-                name, type, dnsClass, timeToLive, in.retainedDuplicate().setIndex(offset, offset + length));
+
+        ByteBuf content = in.retainedDuplicate();
+        try {
+            content.setIndex(offset, offset + length);
+            DnsRecord record = new DefaultDnsRawRecord(name, type, dnsClass, timeToLive, content);
+            content = null;
+            return record;
+        } finally {
+            if (content != null) {
+                content.release();
+            }
+        }
     }
 
     /**
